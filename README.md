@@ -102,7 +102,8 @@ methods you choose, and how you validate your own conclusions.
 **held-out shift from a different set of machines**. Treat the machine IDs, job IDs,
 and dates in this sample as just one example — your code should read whatever machines
 are present in the data and produce results without manual, per-machine edits. Anything
-hardcoded to the specific names or values here won't transfer.
+hardcoded to the specific names or values here won't transfer. You can preview how well
+your pipeline generalizes with the optional [self-check](#self-check-optional) below.
 
 ## Deliverables
 
@@ -195,6 +196,43 @@ single command.
 pip install -r requirements.txt
 python src/analyze.py
 ```
+
+## Self-check (optional)
+
+You can preview how your pipeline scores on a **practice held-out shift** — a
+*different* set of machines than this sample — using the same CLI:
+
+```bash
+./run.sh validate                 # scores src/analyze.py by default
+./run.sh validate src/analyze.py  # or point at your entry file
+.\run.ps1 validate                # Windows (PowerShell)
+```
+
+It runs your pipeline in an isolated sandbox on our side and returns an **F1 score**, a
+**per-machine recall** breakdown, and **how much of the data your pipeline scored
+without error**. You get **3 attempts**.
+
+This is a practice check to see whether your method *generalizes* — it is **not** your
+grade, and this practice shift is **not** the shift we grade on. A pipeline that hardcodes
+values specific to this sample, rather than deriving them from whatever data is present,
+will score poorly here — that's the signal it won't transfer.
+
+### How we run your pipeline
+
+The self-check — and our final evaluation — run your code the same way: from your repo
+root, on a fresh copy of the three input files. For that to work:
+
+- **Read the inputs relative to the working directory**: `data/power.csv`,
+  `data/vibration.csv`, `data/production_log.csv`. We run from the repo root, so read
+  `data/…` relative to the current directory — **don't** hardcode an absolute path or
+  derive one from the script's own location (e.g. `Path(__file__).parent…`).
+- **Write your results to `output/job_summary.csv`** with at least `job_id` and
+  `flagged` (see [Output format](#output-format)) — that's the file we read to score you.
+- **Declare any extra dependencies in `requirements.txt`.** The sandbox has `pandas`,
+  `numpy`, `scipy`, `scikit-learn`, and `plotly` preinstalled; anything else (e.g.
+  `statsmodels`) must be listed there so we can install it before running.
+- Your pipeline must run end-to-end from a single command, with **no manual,
+  per-machine edits**.
 
 ## Submission
 
