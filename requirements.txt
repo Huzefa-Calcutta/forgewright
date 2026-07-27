@@ -1,3 +1,6 @@
 pandas>=2.0
 numpy>=1.24
+pyyaml
+matplotlib
+seaborn
 # Add anything else you use (scipy for cross-correlation, matplotlib for plots, etc.)

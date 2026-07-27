@@ -1,0 +1,99 @@
+# Forgewright CNC tool-wear detection -- pipeline configuration
+#
+# analyse.py reads every user input from this file, so it never needs editing
+# between shifts or machine fleets. Nothing here names a specific machine, job or
+# date: machines, part types and operators are discovered from the data.
+#
+# Any value can be overridden on the command line, e.g.
+#   python3 analyse.py --input-dir /path/to/shift2 --primary-model ransac
+
+paths:
+  input_dir: data                # must contain the three CSV exports
+  power_file: power.csv
+  vibration_file: vibration.csv
+  production_log_file: production_log.csv
+  output_dir: output
+  job_summary_file: job_summary.csv     # the deliverable
+  reading_detail_file: reading_detail.csv.gz   # per-reading audit trail
+  diagnostics_file: diagnostics.json    # what the run decided and why
+  model_dir: models
+
+cleaning:
+  power_min_kw: 0.0              # negative draw is impossible
+  power_abs_max_kw: 500.0        # hard ceiling for this class of machine
+  robust_outlier_iqr_multiple: 50.0   # very loose fence; catches 9999-style sentinels
+  drop_duplicate_readings: true  # exact duplicate (machine, timestamp) rows
+  swap_reversed_job_times: true  # end < start is a transposition, not a real event
+  impute_missing_quantity: true  # median within part type
+  min_job_duration_s: 1.0
+  # The MES clock and the sensor clocks disagree. The offset is ESTIMATED from the
+  # data by maximising in-job power lift, never hardcoded, so a held-out shift with
+  # a different offset aligns itself.
+  align_clocks: true
+  alignment_coarse_step_s: 3600
+  alignment_coarse_range_h: 14
+  alignment_fine_step_s: 60
+  alignment_fine_window_s: 3600
+  pair_tolerance_s: 1.0          # power and vibration are not co-sampled
+  job_edge_trim_s: 0.0           # raise to exclude ramp-up/ramp-down transients
+
+idle:
+  method: min                    # "min" per the brief; "percentile" is the robust variant
+  percentile: 5.0
+  fallback_to_global: true       # for machines with no idle stretch in the export
+
+# Stage 1: regress vibration RMS on cutting power + job context, then test the
+# residuals. This is the "vibration relative to power" test the brief describes.
+#
+# Fitted in LOG space: vibration scales multiplicatively with cutting power, so
+# log(rms) ~ log(net power) makes the error additive and roughly homoscedastic.
+# Without this, a single sigma cannot serve both a 3 kW aluminium cut and a 15 kW
+# titanium cut. See notebooks/02_anomaly_models.ipynb for the comparison.
+primary:
+  model: huber                   # recommended in notebooks/02_anomaly_models.ipynb
+  target: log_vibration_rms_g
+  numeric_features: [log_net_power_kw, quantity]
+  categorical_features: [machine_id, part_type]
+  interactions:                  # per-machine and per-material vibration/power slopes
+    - [log_net_power_kw, machine_id]
+    - [log_net_power_kw, part_type]
+  sigma_multiple: 6.0            # the 6-sigma rule
+  one_sided: true                # only EXCESS vibration indicates wear
+  scale_estimator: trimmed_mad   # sigma of the healthy population, not of everything
+  scale_trim_sigma: 3.0
+  ridge_alpha: 1.0
+  huber_epsilon: 1.35
+  ransac_trials: 120
+  cutting_power_floor_kw: 0.5    # ignore near-idle moments inside a job window
+
+# Stage 2: unsupervised multivariate outlier score in sensor space. peak_to_rms
+# (crest factor) adds an impulsiveness axis the regression never sees, so the two
+# stages are not just restating the same statistic.
+#
+# contamination is the most consequential setting in this file. Because the two
+# stages are combined with a logical AND, a prior far below the true affected
+# fraction silently vetoes true positives. The EDA measured ~13% of cutting
+# readings as affected in this shift, so 0.15 is a deliberately generous prior:
+# specificity comes from the 6-sigma primary stage, not from this threshold.
+secondary:
+  model: mahalanobis             # recommended in notebooks/02_anomaly_models.ipynb
+  features: [log_net_power_kw, log_vib_per_kw, peak_to_rms]
+  contamination: 0.15
+  if_n_estimators: 100
+  if_max_samples: 256
+  lof_n_neighbors: 20
+  lof_reference_size: 4000
+
+# A reading is anomalous only when both stages agree; these thresholds turn
+# reading-level flags into a job-level verdict.
+job_flag:
+  min_anomalous_readings: 5      # ignore one-off spikes
+  min_anomalous_fraction: 0.05   # sustained chatter, not a single transient
+  min_readings_for_verdict: 20   # too little data -> no verdict rather than a guess
+  score_quantile: 0.95           # wear_score = 95th percentile of primary residual sigma
+
+run:
+  random_state: 7
+  mode: fit                      # "fit" this shift's baseline, or "load" a saved model
+  save_model: true
+  verbose: true

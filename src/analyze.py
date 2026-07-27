@@ -1,62 +1,54 @@
+#!/usr/bin/env python3
+"""Forgewright CNC tool-wear analysis -- scikit-learn entry point.
+
+combines the power, vibration and MES exports,
+cleans them, computes per-job mean cutting power and peak vibration, runs the
+two-stage detector and writes ``output/job_summary.csv``.
+
+this script is orchestration only and defines no functions
+of its own. Every user input comes from ``config.yaml`` or a CLI override, and
+nothing is hardcoded to the machines, jobs or dates of a particular shift.
+
 """
-Forgewright Manufacturing CNC Tool-Wear Analysis
 
-Starter scaffold. Fill in the stages. You're free to restructure entirely —
-this is just a starting point so the repo runs from a single command.
+from __future__ import annotations
 
-Usage:
-    python src/analyze.py
-"""
+import os,sys
+from pathlib import Path
 
-import pandas as pd
-
-
-def load_data(data_dir: str = "data"):
-    """Load the three source files."""
-    power = pd.read_csv(f"{data_dir}/power.csv")
-    vibration = pd.read_csv(f"{data_dir}/vibration.csv")
-    production_log = pd.read_csv(f"{data_dir}/production_log.csv")
-    return power, vibration, production_log
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import arg_utils
+import data_io
+from config import load_config
+import preprocess
+import sklearn_pipeline as skl
 
 
-def explore(power, vibration, production_log):
-    """
-    Look at the data before doing anything else.
-    """
-    pass
+# --- 1. Configuration ------------------------------------------------------- #
+args = arg_utils.parse_cli_args()
+cfg = load_config(args.config, overrides=arg_utils.cli_overrides(args))
+logger = data_io.get_logger(cfg.run.verbose)
+logger.info("Config: %s | backend: scikit-learn (sklearn.pipeline)", args.config)
+logger.info("Input dir: %s | Output dir: %s", cfg.resolve(cfg.paths.input_dir), cfg.output_dir)
 
+# --- 2. Load, clean, align clocks, join sensors to jobs (shared) ------------- #
+tables, diagnostics = preprocess.prepare_data(cfg, logger)
 
-def integrate(power, vibration, production_log):
-    """
-    Combine the three sources so you can compute per-job metrics.
-    """
-    pass
+# --- 3. Fit (or load) the two-stage sklearn detector ------------------------ #
+bundle_path = data_io.ensure_dir(cfg.model_dir) / "detector_bundle_sklearn.pkl"
+bundle = skl.resolve_detector(tables["cutting"], cfg, logger, bundle_path)
 
+# --- 4. Score readings and roll up to per-job verdicts ---------------------- #
+scored, jobs, output = skl.run_detection(tables, bundle, cfg, logger)
+data_io.write_table(output, os.path.join(cfg.output_dir, "job_summary.csv"))
 
-def compute_job_metrics(integrated):
-    """
-    For each job: average power draw, peak vibration, and whatever else you
-    need to assess tool wear.
-    """
-    pass
-
-
-def detect_tool_wear(job_metrics):
-    """
-    Identify jobs with elevated vibration relative to power.
-    Return a ranked list.
-    """
-    pass
-
-
-def main():
-    power, vibration, production_log = load_data()
-    explore(power, vibration, production_log)
-    integrated = integrate(power, vibration, production_log)
-    job_metrics = compute_job_metrics(integrated)
-    wear = detect_tool_wear(job_metrics)
-    print("Done. Remember to save your job summary and tool-wear findings to output/.")
-
-
-if __name__ == "__main__":
-    main()
+# --- 6. Console report ------------------------------------------------------ #
+logger.info("=" * 78)
+logger.info("Ranked tool-wear candidates (top 10 by primary score):")
+for row in output.head(10).itertuples():
+    logger.info(
+        "  #%-3s %-8s %-7s %-11s mean_power=%6.2f kW  peak_vib=%5.2f g  wear_score=%6.2f  flagged=%s",
+        row.rank, row.job_id, row.machine_id, row.part_type,
+        row.mean_power_kw, row.peak_vibration_g, row.wear_score, row.flagged,
+    )
+logger.info("=" * 78)
